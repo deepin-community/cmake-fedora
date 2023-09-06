@@ -1,0 +1,85 @@
+#!/bin/bash -eu
+
+function print_usage(){
+    cat <<END
+Usage: $0 <srpm> [scope1 [scope2 ....]]
+    This command does koji scratch build for given fedora and epel releases.
+
+Parameters:
+    srpm: SRPM file to be scratch-built with koji.
+
+    scopes: releases of what to build. Multiple values are allowed.
+        Valid values:
+            rawhide: Build rawhide.
+
+	    fedora: Build actives fedora releases, including Rawhide.
+
+	    fedora_1: Build the latest supported fedora releases.
+	        This is one release eariler than rawhide.
+
+	    fedora_2: Build the second latest supported fedora releases.
+	        This is two releases eariler than rawhide.
+
+            f22 f21 ...: Build the specified fedora releases.
+
+	    epel: Build the currently supported EPEL releases.
+
+	    epel_1: Build the latest supported EPEL releases.
+
+	    epel_2: Build the second latest supported EPEL releases.
+
+	    epel7 el6 ... : The EPEL releases to be built.
+
+        If scopes is not specified, then rawhide and active
+	fedora and EPEL releases are built,
+       	as if "rawhide fedora epel" are specified.
+END
+}
+##=== Finding Library ===
+ScriptFile=$(readlink -e "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")
+export ScriptDir=$(dirname $ScriptFile)
+source $ScriptDir/cmake-fedora-functions
+
+##=== Argument Parsing ===
+if [ $# = 0 ]; then
+    print_usage
+    exit $EXIT_FATAL_INVALID_OPTIONS
+fi
+
+Srpm=$1
+shift
+
+if [[ -z $Srpm ]];then
+    print_usage
+    exit $EXIT_FATAL_INVALID_OPTIONS
+else
+    Srpm=`readlink -f $Srpm`
+fi
+
+if [[ ! -r "$Srpm" ]];then
+    echo "[Fatal] Failed to read $Srpm" > /dev/stderr
+    exit $EXIT_FATAL_INVALID_OPTIONS
+fi
+
+##=== Dependency Checking ===
+cmfd_set_dependencies_programs curl fedpkg
+
+TargetArray=($($ScriptDir/cmake-fedora-koji target "$@" | xargs) )
+
+echo -n "Targets to process:"
+(IFS=' ' echo "${TargetArray[@]}")
+
+Failed=
+
+for t in "${TargetArray[@]}";do
+    if ! koji build --scratch $t $Srpm; then
+	    Failed+=" $t"
+    fi
+done
+
+if [ -n "$Failed" ]; then
+    echo "Failed targets:$Failed" > /dev/stderr
+    exit $EXIT_ERROR_FAIL
+fi
+exit $EXIT_OK
+# vim: set ts=4 sw=4 et

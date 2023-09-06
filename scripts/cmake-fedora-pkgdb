@@ -1,0 +1,144 @@
+#!/bin/bash
+set -eu
+function print_usage(){
+    cat <<END
+NAME
+    cmake-fedora-pkgdb - Obtain package and branch information
+
+SYNOPSIS
+    cmake-fedora-pkgdb [package]
+    cmake-fedora-pkgdb git-branch [package]
+    cmake-fedora-pkgdb newest-nvr <package>
+    cmake-fedora-pkgdb newest-changelog <package>
+
+DESCRIPTION
+    This program get the package information from following sources:
+
+    - Fedora Product Definition Center
+    - Fedora Project Packages GIT repositories
+
+    Following sub-command are recognized:
+        git-branch [package]
+            Return corresponding active fedpkg git branches.
+            If package is given, then it will return active branches.
+
+        newest-nvr <package>
+    	    Returns NVR (e.g. cmake-fedora-2.8.0-1.fc26) of the package in master
+                branch.
+
+        newest-changelog <package>
+	        Returns ChangeLog of the package in master branch.
+
+OPTIONS
+    -h: Show the help
+
+
+BUGS
+    This program will NOT filter out Orphaned and Retired branches.
+END
+}
+
+ScriptFile=$(readlink -e "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")
+export ScriptDir=$(dirname $ScriptFile)
+source $ScriptDir/cmake-fedora-functions
+
+##=== Function start ===
+
+function cmfd_rest_api_get(){
+    local p=$1
+    local query=${2-}
+    local cacheName=${3-}
+    cmfd_manage_cache "pkgdb_$cacheName" "curl -s -f -X GET 'https://pdc.fedoraproject.org/rest_api/v1/$p/$query'"
+}
+
+function cmfd_get_release_git_branches(){
+    local name=$1
+    cmfd_rest_api_get 'releases' "?active=true&name=$name" "releases_$name" |\
+        python -m json.tool | sed -n -e '/branch/ s/^.*\"branch\": "\([^\"]*\)".*$/\1/gp'
+}
+
+function cmfd_get_package_spec_filename(){
+	local name=$1
+    cmfd_manage_cache "$name.spec" "curl -s -f -X GET 'https://src.fedoraproject.org/cgit/rpms/${name}.git/plain/${name}.spec'" > /dev/null
+    echo "$LOCAL_CACHE_DIR/$name.spec"
+}
+
+
+##=== Dependency Checking ===
+
+cmfd_set_dependencies_programs curl
+
+##=== Parameter Parsing ===
+
+while getopts "h" opt;do
+    case $opt in
+	h)
+	    print_usage
+	    exit 0
+	    ;;
+    esac
+done
+shift $((OPTIND-1))
+
+SubCommand=${1-}
+
+#TODO
+case $SubCommand in
+    git-branch )
+        Package=${2-}
+
+        if [[ -z $Package ]];then
+            ##=== Get Active branches ===
+            ActiveBranchArray=( $(cmfd_get_release_git_branches 'Fedora%20EPEL') )
+            ActiveBranchArray+=( $(cmfd_get_release_git_branches 'Fedora') )
+            if [[ ${#ActiveBranchArray[@]} -le 0 ]];then
+                echo "No Branch are found" > /dev/stderr
+                exit 1
+            fi
+            cmfd_inverse_list 'ActiveBranchArray'
+        else
+            ##=== Get Package Active branches ===
+            ActiveBranchArray=( $(cmfd_rest_api_get 'component-branches'\
+                "?active=true&global_component=$Package&fields=name" "component_branch_$Package" |\
+                python -m json.tool | sed -n -e '/name/ s/^.*"name": "\([^"]*\)".*$/\1/gp' ) )
+            if [[ ${#ActiveBranchArray[@]} -le 0 ]];then
+                echo "No Branch are found" > /dev/stderr
+                exit 1
+            fi
+            cmfd_inverse_list 'ActiveBranchArray'
+        fi
+        ;;
+    newest-nvr )
+        Package=${2-}
+        if [[ -z $Package ]];then
+            print_usage
+            echo "[ERROR] Requires <Package>" > /dev/stderr
+            exit $EXIT_FATAL_INVALID_OPTIONS
+        fi
+        specFile=$(cmfd_get_package_spec_filename $Package)
+        if ! grep "^Name:" "$specFile" &> /dev/null ;then
+            echo "[ERROR] Package $Package not found" > /dev/stderr
+            exit $EXIT_FATAL_INVALID_OPTIONS
+        fi
+        rpm -q --qf "%{nvr}" --specfile "$specFile"
+        ;;
+    newest-changelog )
+        Package=${2-}
+        if [[ -z $Package ]];then
+            print_usage
+            echo "[ERROR] Requires <Package>" > /dev/stderr
+            exit $EXIT_FATAL_INVALID_OPTIONS
+        fi
+        specFile=$(cmfd_get_package_spec_filename $Package)
+        if ! grep "^Name:" "$specFile" &> /dev/null ;then
+            echo "[ERROR] Package $Package not found" > /dev/stderr
+            exit $EXIT_FATAL_INVALID_OPTIONS
+        fi
+        rpm -q --changelog --specfile "$specFile"
+        ;;
+    * )
+        Package=$SubCommand
+        $0 git-branch $Package
+        ;;
+esac
+

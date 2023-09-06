@@ -1,0 +1,69 @@
+#!/bin/bash
+set -eu
+
+declare EXIT_OK=0
+declare EXIT_FATAL_UNSPECIFIED=1
+declare EXIT_FATAL_INVALID_OPTIONS=3
+declare EXIT_FATAL_MISSING_DEPENDENCY=4
+declare EXIT_FATAL_FAIL=5
+declare EXIT_ERROR_FAIL=20
+declare EXIT_RETURN_FALSE=40
+
+function cmfd_inverse_list(){
+    local var=$1
+    eval "for((i=\${#$var[@]}-1;i>=0;i--));do echo \"\${$var[\$i]}\"; done"
+}
+
+# RHEL6 does not have realpath, OSX does not have readlink
+function cmfd_realpath(){
+    local p=$1
+    readlink -e "$p" 2>/dev/null || realpath "$p"
+}
+
+: ${CMAKE_FEDORA_MODULE_SEARCH_PATH:=Modules;cmake-fedora/Modules;${ScriptDir}/../Modules;${ScriptDir}/../cmake-fedora/Modules;/usr/share/cmake/Modules}
+for d in $(sed -e 's/;/ /g'<<<$CMAKE_FEDORA_MODULE_SEARCH_PATH) ; do
+    if [ -r $d/CmakeFedoraScript.cmake ];then
+        CmakeFedoraScriptCmake=$d/CmakeFedoraScript.cmake
+    fi
+done
+
+if [ -z "${CmakeFedoraScriptCmake}" ];then
+    echo "[Error] CmakeFedoraScript.cmake is not found" > /dev/stderr
+    exit $EXIT_FATAL_MISSING_DEPENDENCY
+fi
+
+##=== Functions that require CmakeFedoraScript.cmake Start ===
+function cmfd_get_variable(){
+    cmake -Dcmd=get_variable -Dvar=$1 -Dnoescape_semicolon=1 -P ${CmakeFedoraScriptCmake}
+}
+
+function cmfd_manage_cache(){
+    cache_file="$1"
+    run="$2"
+    shift 2
+    cmake -Dcmd=manage_file_cache "-Dcache_file=$cache_file" \
+        "-Drun:string=$run" "$@" -P ${CmakeFedoraScriptCmake}
+}
+
+function cmfd_set_dependencies_programs(){
+    for cmd in "$@" ;do
+        CmakeFedoraScriptOptArray=(-D cmd=find_program verbose_level=1  )
+        CmakeFedoraScriptOptArray+=( -D "names=$cmd")
+        CmdPath=`cmake "${CmakeFedoraScriptOptArray[@]}" -P ${CmakeFedoraScriptCmake}`
+        local ret=$?
+        if [ $ret -ne 0 ];then
+            exit $et
+        fi
+
+        VarName=`tr a-z- A-Z_ <<<$cmd`_CMD
+        eval "export $VarName=$CmdPath"
+    done
+}
+
+
+LOCAL_CACHE_DIR=$(cmfd_get_variable LOCAL_CACHE_DIR)
+
+if [ -z "${LOCAL_CACHE_DIR}" ];then
+    LOCAL_CACHE_DIR=$HOME/.cache/cmake-fedora/
+fi
+[ -d ${LOCAL_CACHE_DIR} ] || mkdir -p ${LOCAL_CACHE_DIR}

@@ -1,0 +1,5 @@
+# They are license templates, not license.
+cmake-fedora: extra-license-file usr/share/cmake/Templates/fedora/gpl-2.0.txt
+cmake-fedora: extra-license-file usr/share/cmake/Templates/fedora/gpl-3.0.txt
+cmake-fedora: extra-license-file usr/share/cmake/Templates/fedora/lgpl-2.1.txt
+cmake-fedora: extra-license-file usr/share/cmake/Templates/fedora/lgpl-3.0.txt
