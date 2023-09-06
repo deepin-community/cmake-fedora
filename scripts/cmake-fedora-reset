@@ -1,0 +1,84 @@
+#!/bin/bash -eu
+
+function print_usage(){
+    cat<<END
+NAME
+    cmake-fedora-reset - clean and reset cmake environment to default
+
+SYNOPSIS
+    cmake-fedora-reset [options] <path-to-source>
+
+ARGUMENTS
+    <path-to-source>
+        The directory that contains the main CMakeLists.txt
+
+OPTIONS
+    -h
+        Show the detailed help
+
+DESCRIPTION
+    This program wipes out the previous generated files, then run the cmake
+again to generate build files.
+
+    Note that all Makefiles are also wiped out. So this is unsuidable for the
+projects that customize their Makefiles.
+
+ENVIRONMENT
+    CMAKE_FEDORA_ENABLE_FEDORA_BUILD
+        Boolean value for enabling fedora support
+        Default: ON
+
+    CMAKE_FEDORA_MANAGE_MESSAGE_LEVEL
+        Verbose level of cmake-fedora, the higher the value, the more verbose
+        messages are.
+        Default: 6
+
+END
+}
+
+##== Variables ==
+: ${CMAKE_FEDORA_ENABLE_FEDORA_BUILD:=ON}
+
+function parse_options(){
+    while getopts "h" opt;do
+        case $opt in
+            h )
+                print_usage
+                exit 0
+                ;;
+            * )
+                echo "[ERROR]: Invalid options $opt" > /dev/stderr
+                echo 'Run "cmake-fedora-reset -h" to get help"' > /dev/stderr
+                exit 1
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    if [ $SystemLocales -eq 1 ];then
+        CmakeOptionArray+=( -D system_locales=1 )
+    fi
+}
+
+if [ $# = 0 ]; then
+    print_usage
+    exit 1
+fi
+
+SourceDir=$1
+
+cd $SourceDir
+find . -path "*/CMakeFiles/*" -print -delete
+find . -name "Makefile" -print -delete
+rm -fv CMakeCache.txt
+rm -fv cmake_install.cmake
+rm -fv cmake_uninstall.cmake
+rm -fv CPackConfig.cmake
+rm -frv _CPack_Packages
+rm -fv CPackSourceConfig.cmake
+rm -fv CTestTestfile.cmake
+rm -frv NO_PACK
+rm -frv Testing
+
+cd -
+cmake -DCMAKE_FEDORA_ENABLE_FEDORA_BUILD=${CMAKE_FEDORA_ENABLE_FEDORA_BUILD} -DMANAGE_MESSAGE_LEVEL=6 -DCMAKE_BUILD_TYPE=Debug $SourceDir

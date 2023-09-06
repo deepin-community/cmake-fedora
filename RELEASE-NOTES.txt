@@ -1,0 +1,7 @@
+PRJ_VER=2.9.3
+SUMMARY=Fixed cmake-fedora-fedpkg failed to push to bodhi
+REDHAT_BUGZILLA=
+[Changes]
+- Fixed cmake-fedora-fedpkg failed to push to bodhi.
+- Target tag_pre now depends on target module-only.
+

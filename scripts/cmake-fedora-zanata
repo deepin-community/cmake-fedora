@@ -1,0 +1,180 @@
+#!/bin/bash
+
+function print_usage(){
+    cat<<END
+NAME 
+    cmake-fedora-zanata - cmake-fedora helper script to operate with zanata the translation system
+
+SYNOPSIS
+    cmake-fedora-zanata [options] xml-download <url> [<project> [<version>]]
+    cmake-fedora-zanata [options] xml-make <url> [<project> [<version>]]
+
+ARGUMENTS
+    Arguments:
+        <url> 
+	    Zanata server URL (e.g. https://translate.zanata.org/zanata/)
+
+	<project>
+	    project: project ID in Zanata.
+	    Default: name of parent directory.
+
+	<version>
+	    version ID in Zanata.
+	    Default: master
+
+    Common options:
+        -z <zanata.xml>
+	     Output zanata.xml file.
+
+OPTIONS
+    -c
+        Derive client Locales from local translation files (.po).
+	It should NOT be use with -l
+
+    -l <Locale1;Locale2;...>
+	Specify client Locale manually. Use ';' to separate Locales.
+	It should NOT be use with -c
+
+    -p <projectType>
+        Specify project type. If not specified, it will set to 'file' for new projects,
+	or whatever defined in Zanata server for existing projects.
+	Available project types: file, gettext, podir, properties, utf8properties, xliff
+
+    -t <transDir>
+	Specify the base directory that contains translation files.
+	Default: Current directory.
+
+    -z <zanata.xml>
+	Output zanata.xml file.
+	Default: zanata.xml
+
+
+DESCRIPTION
+    Note that this program assumes that your ~/.config/zanata.ini is set,
+    and you registered in the coresponding Zanata server.
+
+    This program only support gettext and podir project type.
+
+    Following sub-command are recognized:
+	xml-download
+	    Create a zanata.xml locally, just as-if you were download from server.
+	    This is call 'download' for backward compability, because since
+	    zanata 3.7, there is no direct download link for zanata.xml
+
+	xml-make
+	    Make a working zanata.xml
+
+END
+}
+
+##=== Variables ===
+Locales=""
+ProjectType=file
+TransDir="${PWD}"
+ZanataXml="${PWD}/zanata.xml"
+Url=
+Project=
+Version=
+SystemLocales=1
+declare -a CmakeOptionArray
+
+function parse_options(){
+    while getopts "cl:p:t:z:" opt;do
+	case $opt in
+	    c )
+		SystemLocales=0
+		;;
+	    l )
+		SystemLocales=0
+		Locales=$OPTARG
+		CmakeOptionArray+=( -D "locales=$Locales" )
+		;;
+	    p )
+		ProjectType=$OPTARG
+		;;
+	    t )
+		TransDir=$OPTARG
+		CmakeOptionArray+=( -D "trans_dir=${TransDir}" )
+		;;
+	    z )
+		ZanataXml=$OPTARG
+		CmakeOptionArray+=( -D "zanata_xml=${ZanataXml}" )
+		;;
+	esac
+    done
+    shift $((OPTIND-1))
+
+    if [ $SystemLocales -eq 1 ];then
+	CmakeOptionArray+=( -D system_locales=1 )
+    fi
+}
+
+
+# Check for dependency
+for cmd in cmake ;do
+    if ! which $cmd &>/dev/null;then
+	echo "[Error] $cmd is not found in path" > /dev/stderr
+	exit 2
+    fi
+done
+
+SCRIPT_DIR=$(readlink -f `dirname $0`)
+CMAKE_FEDORA_MODULE_PATHS=( Modules cmake-fedora/Modules ${SCRIPT_DIR}/../Modules /usr/share/cmake/Modules ) 
+for ModuleDir in "${CMAKE_FEDORA_MODULE_PATHS[@]}" ;do
+    if [ -r $ModuleDir/ManageZanataScript.cmake ];then
+	MANAGE_ZANATA_SCRIPT_CMAKE=${ModuleDir}/ManageZanataScript.cmake
+	break
+    fi
+done
+if [ -z "${MANAGE_ZANATA_SCRIPT_CMAKE}" ];then
+    echo "[Error] ManageZanataScript.cmake is not found" > /dev/stderr
+    exit 2
+fi
+
+if [ $# = 0 ]; then
+    print_usage
+    exit 0
+fi
+
+subCmd=$1
+shift
+
+parse_options
+if [ -z "${Url}" ];then
+    Url=$1
+    CmakeOptionArray+=( -D "url=$Url" )
+    shift
+fi
+if [ -z "${Project}" ];then
+    Project=$1
+    CmakeOptionArray+=( -D "project=$Project" )
+    shift
+fi
+if [ -z "${Version}" ];then
+    Version=$1
+    CmakeOptionArray+=( -D "version=$Version" )
+    shift
+fi
+
+
+case $subCmd in
+    new )
+	CmakeOptionArray+=( -D cmd=new )
+	cmake "${CmakeOptionArray[@]}"  -P "${MANAGE_ZANATA_SCRIPT_CMAKE}"
+	;;
+    xml-download )
+	CmakeOptionArray+=( -D cmd=zanata_xml_download )
+	cmake "${CmakeOptionArray[@]}"  -P "${MANAGE_ZANATA_SCRIPT_CMAKE}"
+	;;
+    xml-make )
+	CmakeOptionArray+=( -D cmd=zanata_xml_make )
+	cmake "${CmakeOptionArray[@]}" 	-P "${MANAGE_ZANATA_SCRIPT_CMAKE}"
+	;;
+    * )
+	echo "Sub-command $subCmd is not recognized" > /dev/stderr
+	exit 2
+	;;
+esac
+set +x
+exit 0
+

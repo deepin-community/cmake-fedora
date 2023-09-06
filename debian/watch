@@ -1,0 +1,2 @@
+version=3
+https://pagure.io/cmake-fedora/releases /cmake-fedora/archive/(?:[\d\.]+)/cmake-fedora-([\d\.]+).tar.gz

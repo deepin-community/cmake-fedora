@@ -1,0 +1,360 @@
+#!/bin/bash
+set -eu
+
+function print_usage(){
+    cat<<END
+NAME
+    cmake-fedora-koji - cmake-fedora helper script to get koji build information
+
+SYNOPSIS
+    cmake-fedora-koji ver [scope1 [scope2] ...]
+    cmake-fedora-koji branch [scope1 [scope2] ...]
+    cmake-fedora-koji koji-buildinfo-suffix [scope1 [scope2] ...]
+    cmake-fedora-koji git-branch [scope1 [scope2] ...]
+    cmake-fedora-koji bodhi-branch [scope1 [scope2] ...]
+    cmake-fedora-koji target [scope1 [scope2] ...]
+    cmake-fedora-koji newest-build [package]
+    cmake-fedora-koji newest-changelog [package]
+    cmake-fedora-koji clean
+
+DESCRIPTION
+    Following sub-command are recognized:
+        ver
+            Return version numbers, such as "21 20 7 6"
+
+        branch
+            Return branch names by removing '-candidate' from koji
+            targets, such as "f21 f20 epel7 el6"
+
+        koji-buildinfo-suffix
+            Return the tags for koij buildinfo, such as "fc22 fc21 el7 el6"
+
+        git-branch
+            Return fedpkg git branch names, such as "master f20 epel7 el6"
+
+        bodhi-branch
+            Return bodhi branch names,
+            such as "fc21 fc20 el7 el6", this does not return rawhide.
+
+        target
+            Return koji target names, such as "f21-candidate el7-candidate"
+
+        newest-build
+            Return the newest build in n-v-r.t format.
+            Note that koji latest-build only returns the updates pushed
+            to stable, newest-build, however, returns the updates in
+            testing as well.
+
+        newest-changelog
+            Return the newest changelog of a package in
+            release, updates, and update-testing
+            Note that koji latest-build only returns the updates pushed
+            to stable, newest-build, however, returns the updates in
+            testing as well.
+
+        clean
+            For cleaning cache.
+
+SCOPES
+    scopes are set of branch to build. Multiple values are allowed.
+        Valid values:
+            rawhide: Build rawhide.
+
+            fedora: Build actives fedora releases, including Rawhide.
+            fedora_1: Build the latest supported fedora releases.
+               This is one release eariler than rawhide.
+
+            fedora_2: Build the second latest supported fedora releases.
+               This is two releases eariler than rawhide.
+
+            f22 f21 ...: Build the specified fedora releases.
+
+            epel: Build the currently supported EPEL releases.
+
+            epel_1: Build the latest supported EPEL releases.
+
+            epel_2: Build the second latest supported EPEL releases.
+
+            epel7 el6 ... : The EPEL releases to be built.
+
+         If scopes is not specified, then "fedora epel" is assumed.
+
+END
+}
+
+##=== Finding Library ===
+ScriptFile=$(readlink -e "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")
+export ScriptDir=$(dirname $ScriptFile)
+source $ScriptDir/cmake-fedora-functions
+
+function get_koji_list_targets(){
+    cmfd_manage_cache koji-list-targets "koji list-targets --quiet"
+}
+
+function get_koji_history(){
+    pkg=$1
+    LOCAL_KOJI_HISTORY_CACHE_EXPIRY=$(cmfd_get_variable LOCAL_KOJI_HISTORY_CACHE_EXPIRY)
+    cmfd_manage_cache koji-$pkg-history \
+	    "koji list-history --active --event --package $pkg | grep 'tagged into' | grep -v 'trashcan'" \
+	    "-Dexpiry_seconds=${LOCAL_KOJI_HISTORY_CACHE_EXPIRY}"
+}
+
+function get_pkg_changelog(){
+    pkg=$1
+    nvr=$2
+    LOCAL_PKG_CHANGELOG_CACHE_EXPIRY=$(cmfd_get_variable LOCAL_PKG_CHANGELOG_CACHE_EXPIRY)
+    _prefix=${LOCAL_CACHE_DIR}/koji-$pkg-changelog
+    cmfd_manage_cache koji-$pkg-changelog \
+	    "koji buildinfo --changelog $nvr | csplit -s -f ${_prefix} - '%^Changelog%1' && cat ${_prefix}00" \
+        "-Dexpiry_seconds=${LOCAL_PKG_CHANGELOG_CACHE_EXPIRY}"
+}
+
+function get_RAWHIDE_BRANCH(){
+    get_koji_list_targets | awk '{if ($1 == "rawhide") print $3}' | sed -e 's/-pending//'
+}
+
+function get_fedora_branches(){
+    local target
+    local ver
+    local line
+    local verArray=()
+    while read line; do
+        target=$line
+        ver=$(sed -E -e 's/^f([0-9]+)-.*$/\1/'<<<$target)
+        verArray+=( $ver )
+        FedoraTargetDict[$ver]=$target
+        if [[ "f$ver" = $RAWHIDE_BRANCH ]];then
+            RawhideVer=$ver
+        fi
+    done < <(get_koji_list_targets | awk '{if ($1 ~ "^f[0-9]+-candidate$") print $1}' )
+    FedoraVerArray=( $(for ver in "${verArray[@]}" ; do echo $ver; done | sort -g -r ))
+}
+
+function get_epel_branches(){
+    # cmake-fedora no longer support el5
+    local target
+    local ver
+    local line
+    local verArray=()
+    while read line; do
+        target=$line
+        ver=$(sed -E -e 's/^(epel|el)([0-9]+)-.*$/\2/'<<<$target)
+        if [[ $ver -gt 5 ]];then
+            verArray+=( $ver )
+            EpelTargetDict[$ver]=$target
+            EpelBranchDict[$ver]=$(sed -E -e 's/-candidate//' <<<$target)
+        fi
+    done < <(get_koji_list_targets | awk '{if ($1 ~ "^(epel|el)[0-9]+-candidate$") print $1}' )
+    EpelVerArray=( $(for ver in "${verArray[@]}" ; do echo $ver; done | sort -g -r ))
+}
+
+##=== Arguments Parsing  ===
+if [ $# = 0 ]; then
+    print_usage
+    exit $EXIT_OK
+fi
+
+subCmd=$1
+shift
+
+declare -a FedoraVerArray
+declare -A FedoraTargetDict
+declare -a EpelVerArray
+declare -A EpelBranchDict
+declare -A EpelTargetDict
+
+##=== Dependency Checking ===
+cmfd_set_dependencies_programs cmake koji
+
+##=== Sub-commands  ===
+if [ "${subCmd}" = "clean" ];then
+    if [ -e "${LOCAL_CACHE_DIR}" ]; then
+    	rm -fv ${LOCAL_CACHE_DIR}/koji*
+    fi
+    exit $EXIT_OK
+elif [ "${subCmd}" = "newest-build" ];then
+    pkg=$1
+    if [ -z "${pkg}" ];then
+	    print_usage
+	    echo "Please specify package name." > /dev/stderr
+    fi
+    shift
+    content=`get_koji_history "${pkg}"`
+    if [ "$?" = "0" ] ; then
+	    echo "${content}" | tail -n 1 | sed -e "s/ tagged into.*$//" | sed -e "s/^.*(eid [0-9]*) //"
+        exit $EXIT_OK
+    else
+	    echo "Cannot found package ${pkg}" > /dev/stderr
+        exit $EXIT_FATAL_INVALID_OPTIONS
+    fi
+elif [ "${subCmd}" = "newest-changelog" ];then
+    pkg=${1-}
+    if [ -z "${pkg}" ];then
+	    print_usage
+	    echo "[Error] Package name is not specified." > /dev/stderr
+    	exit $EXIT_FATAL_INVALID_OPTIONS
+    fi
+
+    ## Mitigate Bug 1474195 - Excessive b' in koji build-info --changelog
+    ## We use cmake-fedora-pkgdb newest-changelog
+    $ScriptDir/cmake-fedora-pkgdb newest-changelog $pkg
+    exit $EXIT_OK
+fi
+
+# fedora_nr: Fedora w/o rawhide
+fedora=0
+FEDORA_RAWHIDE_FLAG=1
+FEDORA_1_FLAG=2
+FEDORA_2_FLAG=4
+FEDORA_NR_FLAG=8
+epel=0
+EPEL_1_FLAG=1
+EPEL_2_FLAG=2
+EPEL_ALL_FLAG=4
+FedoraScopeVerList=
+EpelScopeVerList=
+
+if [[ -z "${1-}" ]];then
+    fedora=$((FEDORA_NR_FLAG | FEDORA_RAWHIDE_FLAG))
+    epel=$((EPEL_1_FLAG | EPEL_2_FLAG))
+else
+    for scopeCmd in $@;do
+	case $scopeCmd in
+	    'master' | 'rawhide' )
+		    fedora=$((fedora|FEDORA_RAWHIDE_FLAG))
+		    ;;
+	    'fedora' )
+		    fedora=$((fedora|FEDORA_RAWHIDE_FLAG|FEDORA_NR_FLAG))
+		    ;;
+	    'fedora_1' )
+		    fedora=$((fedora|FEDORA_1_FLAG))
+		    ;;
+	    'fedora_2' )
+		    fedora=$((fedora|FEDORA_2_FLAG))
+		    ;;
+	    'epel' )
+		    epel=$((epel|EPEL_ALL_FLAG))
+		    ;;
+	    'epel_1' )
+		    epel=$((epel|EPEL_1_FLAG))
+		    ;;
+	    'epel_2' )
+		    epel=$((epel|EPEL_2_FLAG))
+		    ;;
+	    'all' )
+		    fedora=$((fedora|FEDORA_RAWHIDE_FLAG|FEDORA_NR_FLAG))
+		    epel=$((epel|EPEL_ALL_FLAG))
+		    break
+		    ;;
+	    f[0-9]* | fc[0-9]* )
+		    if [[ $((fedora & FEDORA_NR_FLAG)) -eq  0 ]];then
+                FedoraScopeVerList+=( $(sed -e 's/f[c]*//g' <<<$scopeCmd) )
+		    fi
+		    ;;
+	    el* | epel[0-9]* )
+		    if [[ $((epel & EPEL_ALL_FLAG)) -eq  0 ]];then
+                EpelScopeVerList+=( $(sed -e 's/e[pe]*l//g' <<<$scopeCmd) )
+		    fi
+		    ;;
+	    * )
+		    echo "Invalid scope $scopeCmd" > /dev/stderr
+		    exit -1;
+    	esac
+    done
+fi
+
+RAWHIDE_BRANCH=`get_RAWHIDE_BRANCH`
+
+get_fedora_branches
+FedoraResultVerArray=()
+if [[ $((fedora & FEDORA_RAWHIDE_FLAG)) -ne  0 ]];then
+    FedoraResultVerArray+=($RawhideVer)
+fi
+if [[ $((fedora & FEDORA_NR_FLAG)) -ne  0 ]];then
+    for ver in "${FedoraVerArray[@]}";do
+        FedoraResultVerArray+=( $ver )
+    done
+else
+    if [[ $((fedora & FEDORA_1_FLAG)) -ne  0 ]];then
+        FedoraResultVerArray+=( ${FedoraVerArray[1]} )
+    fi
+    if [[ $((fedora & FEDORA_2_FLAG)) -ne  0 ]];then
+        FedoraResultVerArray+=( ${FedoraVerArray[2]} )
+    fi
+    for f in "${FedoraScopeVerList[@]}";do
+        FedoraResultVerArray+=($f)
+    done
+fi
+IFS=$'\n' FedoraResultVerArray=($(sort -g -r -u <<<"${FedoraResultVerArray[*]-}"))
+
+get_epel_branches
+EpelResultVerArray=()
+if [[ $((epel & EPEL_ALL_FLAG)) -ne  0 ]];then
+    EpelResultVerArray=(${EpelVerArray[@]})
+else
+    if [[ $((epel & EPEL_1_FLAG)) -ne  0 ]];then
+    	EpelResultVerArray+=(${EpelVerArray[0]-})
+    fi
+    if [[ $((epel & EPEL_2_FLAG)) -ne  0 ]];then
+	    EpelResultVerArray+=(${EpelVerArray[1]-})
+    fi
+    for f in "${EpelScopeVerList[@]}";do
+    	EpelResultVerArray+=($f)
+    done
+fi
+IFS=$'\n' EpelResultVerArray=($(sort -g -r -u <<<"${EpelResultVerArray[*]-}"))
+
+case $subCmd in
+    ver )
+        for v in ${FedoraResultVerArray[@]-} ${EpelResultVerArray[@]-};do
+            echo "$v"
+	    done
+	    ;;
+
+    branch | git-branch )
+    	for v in ${FedoraResultVerArray[@]-};do
+	        if [[ $v = $RawhideVer ]];then
+		        if [[ $subCmd = "git-branch" ]];then
+        		    echo "master"
+    		    else
+		            echo "rawhide"
+	    	    fi
+            else
+                echo "f$v"
+            fi
+        done
+    	for v in ${EpelResultVerArray[@]-};do
+            echo "${EpelBranchDict[$v]}"
+        done
+        ;;
+
+    koji-buildinfo-suffix | bodhi-branch )
+        for v in ${FedoraResultVerArray[@]-};do
+            if [[ ! $v = $RawhideVer ]];then
+                echo "fc$v"
+            elif [[ $subCmd = "koji-buildinfo-suffix" ]];then
+                echo "fc$v"
+            fi
+        done
+        for v in ${EpelResultVerArray[@]-};do
+            echo "el$v"
+        done
+        ;;
+
+    target )
+        for v in ${FedoraResultVerArray[@]-};do
+            echo "${FedoraTargetDict[$v]}"
+        done
+        for v in ${EpelResultVerArray[@]-};do
+            echo "${EpelTargetDict[$v]}"
+        done
+        ;;
+
+    *)
+        print_usage
+        echo "Invalid subcommand '$subCmd'" > /dev/stderr
+        exit -1
+        ;;
+esac
+exit 0
+# vim: set ts=4 sw=4 et

@@ -1,0 +1,183 @@
+cmake_minimum_required(VERSION 2.6.2)
+
+# Included scripts do automatic cmake_policy PUSH and POP.
+# OLD: CMake policy in included script will affect the invoker.
+# CMAKE_POLICY(SET CMP0011 OLD)
+
+
+####################################################################
+# Find cmake-fedora
+#
+LIST(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_SOURCE_DIR}/Modules")
+INCLUDE(ManageEnvironmentCommon OPTIONAL RESULT_VARIABLE MANAGE_ENVIRONMENT_PATH)
+
+IF(MANAGE_ENVIRONMENT_PATH STREQUAL "NOTFOUND")
+    # Is cmake-fedora a git submodule?    
+    IF(NOT EXISTS ${CMAKE_SOURCE_DIR}/Modules)
+	## Create a link if Modules/ does not exists
+	IF(NOT EXISTS ${CMAKE_SOURCE_DIR}/cmake-fedora)
+	    IF(EXISTS ${CMAKE_SOURCE_DIR}/.gitmodules)
+                ## cmake-fedora may be a git submodules
+		EXECUTE_PROCESS(COMMAND git submodule init
+		    COMMAND git submodule update
+		    RESULT_VARIABLE gitSubmoduleFailed
+		    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} 
+		    )	
+	    ENDIF(EXISTS ${CMAKE_SOURCE_DIR}/.gitmodules)
+	ENDIF(NOT EXISTS ${CMAKE_SOURCE_DIR}/cmake-fedora)
+
+	IF(EXISTS ${CMAKE_SOURCE_DIR}/cmake-fedora/Modules)
+            ## cmake-fedora is now available as subdirectory, try again
+EXECUTE_PROCESS(COMMAND ln -s ${CMAKE_SOURCE_DIR}/cmake-fedora/Modules ${CMAKE_SOURCE_DIR}/Modules)
+	    INCLUDE(ManageEnvironmentCommon RESULT_VARIABLE MANAGE_ENVIRONMENT_PATH)
+	ENDIF(EXISTS ${CMAKE_SOURCE_DIR}/cmake-fedora/Modules)
+    ENDIF(NOT EXISTS ${CMAKE_SOURCE_DIR}/Modules)
+ENDIF(MANAGE_ENVIRONMENT_PATH STREQUAL "NOTFOUND")
+
+IF(MANAGE_ENVIRONMENT_PATH STREQUAL "NOTFOUND")
+MESSAGE(FATAL_ERROR "ManageEnvironmentCommon.cmake is not found in CMAKE_MODULE_PATH.
+Please either:
+    1) Use cmake-fedora as a git submodule:
+git submodule add https://pagure.io/cmake-fedora.git
+    2) Install cmake-fedora from repository:
+       yum -y install cmake-fedora
+    3) Download the source:
+       wget https://releases.pagure.org/cmake-fedora/cmake-fedora-modules-only-latest.tar.gz
+       tar zxvf SOURCES/cmake-fedora-modules-only-latest.tar.gz")
+ENDIF(MANAGE_ENVIRONMENT_PATH STREQUAL "NOTFOUND")
+
+GET_FILENAME_COMPONENT(CMAKE_FEDORA_MODULE_DIR 
+    "${MANAGE_ENVIRONMENT_PATH}" PATH CACHE
+    )
+
+# Whether to build on fedora
+SET(CMAKE_FEDORA_ENABLE_FEDORA_BUILD "1" CACHE STRING "Enable fedora build")
+
+# Default Message level M_OFF (4)
+SET(MANAGE_MESSAGE_LEVEL 4 CACHE STRING "Message (Verbose) Level")
+
+####################################################################
+# Project specific information
+#
+PROJECT(<PRJ_NAME>)
+SET(PRJ_SUMMARY "<PRJ_SUMMARY>")
+
+SET(PRJ_DESCRIPTION
+	""
+   )
+
+SET(AUTHORS "<PRJ_AUTHORS>")
+SET(MAINTAINER "<PRJ_MAINTAINER>")
+SET(VENDOR "<PRJ_VENDOR>")
+SET(LICENSE "<PRJ_LICENSE>")
+
+# Groups as in /usr/share/doc/GROUPS
+SET(PRJ_GROUP "<PRJ_GROUP>")
+
+# Uncommend for noarch project
+#SET(BUILD_ARCH "noarch")
+SET(RPM_SPEC_URL "<RPM_SPEC_URL>")
+SET(RPM_SPEC_SOURCES "<RPM_SPEC_SOURCE_URL>/%{name}-%{version}-Source.tar.gz")
+
+####################################################################
+# Includes
+#
+
+# Use standard FHS if Fedora build is not enabled
+IF(NOT CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+    SET(LIBEXEC_DIR "${LIB_DIR}" CACHE PATH "LIBEXEC dir")
+ENDIF(NOT CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+
+INCLUDE(ManageEnvironment)
+INCLUDE(ManageArchive)
+INCLUDE(ManageVersion)
+RELEASE_NOTES_READ_FILE()
+INCLUDE(ManageSourceVersionControl)
+INCLUDE(ManageTarget)
+INCLUDE(ManageTranslation)
+INCLUDE(ManageUninstall)
+ENABLE_TESTING()
+
+####################################################################
+# Dependencies
+#
+
+INCLUDE(ManageDependency)
+## Requires
+# MANAGE_DEPENDENCY(REQUIRES PACKAGE1 REQUIRED)
+# MANAGE_DEPENDENCY(REQUIRES PACKAGE2 VER PACKAGE2_MIN_VER REQUIRED 
+#   PACKAGE_NAME "PACKAGE2_NAME_IN_REPO")
+
+## Build requires
+# MANAGE_DEPENDENCY(BUILD_REQUIRES PACKAGE3 REQUIRED)
+# MANAGE_DEPENDENCY(BUILD_REQUIRES PACKAGE4 VER PACKAGE4_MIN_VER REQUIRED 
+#   PACKAGE_NAME "PACKAGE4_NAME_IN_REPO")
+# MANAGE_DEPENDENCY(BUILD_REQUIRES PACKAGE5 VER PACKAGE5_MIN_VER REQUIRED 
+#   DEVEL)
+
+####################################################################
+# Building
+#
+#ADD_SUBDIRECTORY(po)
+#ADD_SUBDIRECTORY(src bin)
+
+####################################################################
+# Installing
+#
+
+MANAGE_SOURCE_VERSION_CONTROL_<PRJ_SOURCE_VERSION_CONTROL>()
+INSTALL(FILES AUTHORS ChangeLog COPYING DESTINATION ${PRJ_DOC_DIR})
+
+## Schemas
+#SET(GCONF_SCHEMAS_FILE ${IBUS_CHEWING_SCHEMAS})
+
+####################################################################
+# Packing
+#
+
+## Pack Source 
+SET(SOURCE_ARCHIVE_DIR ${CMAKE_BINARY_DIR} CACHE PATH "Source Archive Dir")
+PACK_SOURCE_ARCHIVE("${SOURCE_ARCHIVE_DIR}"
+    GITIGNORE ${CMAKE_SOURCE_DIR}/.gitignore
+    )
+
+## Pack RPM
+IF(CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+    SET(RPM_BUILD_SOURCES ${SOURCE_ARCHIVE_DIR})
+    INCLUDE(ManageRPM)
+    PACK_RPM()
+    RPM_MOCK_BUILD()
+ENDIF(CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+
+####################################################################
+# Hosting and Release
+#
+
+#INCLUDE(ManageUpload)
+#ADD_CUSTOM_TARGET(upload
+#    COMMENT "Uploading all files"
+#    )
+
+#MANAGE_UPLOAD_CMD(scp src UPLOAD_FILES ${SOURCE_ARCHIVE_FILE})
+#ADD_DEPENDENCIES(upload upload_src)
+
+INCLUDE(ManageRelease)
+IF(CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+    INCLUDE(ManageReleaseFedora)
+    RELEASE_FEDORA(fedora epel)
+    # "Off" Warning is displayed if mock is not installed.
+    MANAGE_RELEASE(tag_push release_fedora)
+ELSE(CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+    MANAGE_RELEASE(tag_push)
+ENDIF(CMAKE_FEDORA_ENABLE_FEDORA_BUILD)
+
+####################################################################
+# Custom
+#
+
+####################################################################
+# Test Suites.
+#
+
+#ADD_TEST("Test" test_cmd1)
+

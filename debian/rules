@@ -1,4 +1,23 @@
 #!/usr/bin/make -f
+DH_VERBOSE = 1
+
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/default.mk
 
 %:
 	dh $@
+
+execute_before_dh_auto_configure:
+	# Needed by cmake configure
+	cp debian/build-aux/gitignore ./.gitignore
+
+override_dh_auto_test:
+	# FIXME: testing is broken for now.
+
+override_dh_install:
+	dh_install
+	rm -r $(CURDIR)/debian/cmake-fedora/usr/bin
+	rm $(CURDIR)/debian/cmake-fedora/usr/share/doc/cmake-fedora/COPYING
+
+override_dh_installchangelogs:
+	dh_installchangelogs --keep

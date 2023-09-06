@@ -1,0 +1,23 @@
+# Quoting
+VAR_Q_1= Kudo
+VAR_Q_2= "Kudo"
+VAR_Q_3= "Kudo "
+VAR_Q_4= "Kudo;Good"
+VAR_Q_5= ""
+
+# String with ;
+VAR_SC_1 = "ASD;FGH"
+VAR_SC_2 = ASD;FGH
+
+# String with \
+VAR_SLASH_1="With \
+2 \
+SLASHES"
+
+VAR_SLASH_2=Test\
+SLASH
+
+VAR_SLASH_3="Will \n\
+ and \n\
+OK?"
+
